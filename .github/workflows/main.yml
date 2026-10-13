@@ -2,8 +2,22 @@ name: HR Scraper Bot
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 8 * * 1'
+    inputs:
+      job_title:
+        description: 'نوع التكوين أو المهنة (مثلاً: Pflegefachmann)'
+        required: true
+        default: 'pflegefachmann'
+        type: string
+      location:
+        description: 'المدينة أو الولاية (مثلاً: stuttgart أو schreiben Sie "alle" للكل)'
+        required: true
+        default: 'stuttgart'
+        type: string
+      start_year:
+        description: 'سنة البدء (مثلاً: 2027)'
+        required: true
+        default: '2027'
+        type: string
 
 jobs:
   run-bot:
@@ -21,6 +35,10 @@ jobs:
         run: pip install requests
 
       - name: Run Scraper
+        env:
+          JOB_TITLE: ${{ github.event.inputs.job_title }}
+          LOCATION: ${{ github.event.inputs.location }}
+          START_YEAR: ${{ github.event.inputs.start_year }}
         run: python scraper.py
 
       - name: Save CSV results
@@ -28,5 +46,5 @@ jobs:
           git config --global user.name "Bot"
           git config --global user.email "bot@github.com"
           git add hr_emails.csv
-          git commit -m "Auto-update HR emails" || exit 0
+          git commit -m "Auto-update HR emails with custom inputs" || exit 0
           git push
