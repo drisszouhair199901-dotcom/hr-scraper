@@ -1,0 +1,32 @@
+name: HR Scraper Bot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * 1'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install library
+        run: pip install requests
+
+      - name: Run Scraper
+        run: python scraper.py
+
+      - name: Save CSV results
+        run: |
+          git config --global user.name "Bot"
+          git config --global user.email "bot@github.com"
+          git add hr_emails.csv
+          git commit -m "Auto-update HR emails" || exit 0
+          git push
