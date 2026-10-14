@@ -160,5 +160,94 @@ def index():
             .alert { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px; border-radius: 8px; margin-top: 20px; text-align: center; }
             table { width: 100%; margin-top: 25px; border-collapse: collapse; font-size: 14px; }
             th, td { border: 1px solid #e2e8f0; padding: 12px; text-align: right; }
-            th { background: #f1f5f9; color:
+            th { background: #f1f5f9; color: #475569; }
+            .badge { background: #d1fae5; color: #065f46; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+            .email-box { background: #eff6ff; color: #1e40af; padding: 6px 10px; border-radius: 6px; font-family: monospace; font-weight: bold; display: inline-block; }
+            a { color: #2563eb; text-decoration: none; }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>📧 محرك إيميلات الموارد البشرية للأوسبيلدونغ (HR Direct)</h2>
+            <form method="POST">
+                <div class="form-grid">
+                    <div>
+                        <label>التكوين (مثل: Pflegefachmann):</label>
+                        <input type="text" name="job" value="{{ request.form.get('job', 'Pflegefachmann') }}" required>
+                    </div>
+                    <div>
+                        <label>المدينة بألمانيا (مثل: Stuttgart):</label>
+                        <input type="text" name="location" value="{{ request.form.get('location', 'Stuttgart') }}" required>
+                    </div>
+                    <div>
+                        <label>سنة البدء:</label>
+                        <input type="text" name="start_year" value="{{ request.form.get('start_year', '2027') }}" required>
+                    </div>
+                    <div>
+                        <label>رقم الصفحة (لتغيير النتائج):</label>
+                        <input type="number" name="page" min="1" max="10" value="{{ request.form.get('page', '1') }}" required>
+                    </div>
+                </div>
+                <button type="submit" class="full-width">بحث واستخراج الإيميلات 🎯</button>
+            </form>
 
+            {% if message %}<div class="alert">{{ message }}</div>{% endif %}
+
+            {% if all_results %}
+                <h3 style="margin-top: 30px;">الإيميلات المستخرجة ({{ all_results|length }} إيميل):</h3>
+                
+                <form action="/download_csv" method="POST">
+                    <input type="hidden" name="data_json" value="{{ all_results | tojson | escape }}">
+                    <button type="submit" class="download-btn">📥 تحميل هذه النتائج كملف Excel / CSV</button>
+                </form>
+
+                <table>
+                    <tr>
+                        <th>المؤسسة / المستشفى</th>
+                        <th>البريد الإلكتروني المباشر (HR)</th>
+                        <th>المصدر</th>
+                    </tr>
+                    {% for item in all_results %}
+                    <tr>
+                        <td><b>{{ item.company }}</b><br><small style="color: #64748b;">{{ item.title }} (سنة {{ item.year }})</small></td>
+                        <td>
+                            <div class="email-box">
+                                <a href="mailto:{{ item.email }}">{{ item.email }}</a>
+                            </div>
+                        </td>
+                        <td><span class="badge">{{ item.source }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% endif %}
+        </div>
+    </body>
+    </html>
+    '''
+    return render_template_string(html_template, all_results=all_results, message=message)
+
+@app.route('/download_csv', methods=['POST'])
+def download_csv():
+    import json
+    data_json = request.form.get('data_json', '[]')
+    try:
+        results = json.loads(data_json)
+    except:
+        results = []
+
+    si = io.StringIO()
+    writer = csv.writer(si)
+    writer.writerow(['Company / Institution', 'Job Title', 'HR Email', 'Source', 'Start Year'])
+    
+    for item in results:
+        writer.writerow([item.get('company'), item.get('title'), item.get('email'), item.get('source'), item.get('year')])
+
+    output = si.getvalue()
+    return Response(
+        output,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment.filename=Ausbildung_HR_Emails.csv"}
+    )
+
+if __name__ == '__main__':
+    app.run(debug=True)
