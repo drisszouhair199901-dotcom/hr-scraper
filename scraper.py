@@ -6,40 +6,52 @@ from flask import Flask, render_template_string, request
 
 app = Flask(__name__)
 
-# المفاتيح الخاصة بك المدمجة جاهزة
 SERPAPI_KEY = "a3c6332180b59cd9845417aef8b4d95fb7d24adb4027da7a728ef07ec9b1fb88"
 RAPIDAPI_KEY = "0a0c832913mshf933112d46406d6p147a81jsnc4dd15cf2fbe"
 ADZUNA_APP_ID = "8857f5c6"
 ADZUNA_APP_KEY = "2ac77f434f0c030404ff3a09cc4b5768"
 
-def fetch_serpapi(job, location):
+def clean_and_extract_emails(text):
+    if not text:
+        return []
+    # استخراج كل الإيميلات المكتوبة في النص
+    raw_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text)
+    valid_emails = set()
+    for em in raw_emails:
+        em_clean = em.lower().strip()
+        # استبعاد الإيميلات الوهمية أو البرمجية المرتبطة بالمواقع التقنية
+        if not any(x in em_clean for x in ['.png', '.jpg', '.jpeg', 'example', 'sentry', 'w3.org', 'domain', 'email', '2x', '3x']):
+            valid_emails.add(em_clean)
+    return list(valid_emails)
+
+def fetch_serpapi(job, location, page):
     results = []
     try:
         url = "https://serpapi.com/search"
+        start_from = (int(page) - 1) * 10
         params = {
             "engine": "google_jobs",
-            "q": f"Ausbildung {job} {location}".strip(),
+            "q": f"Ausbildung {job} {location} bewerbung email".strip(),
             "hl": "de",
             "gl": "de",
+            "start": start_from,
             "api_key": SERPAPI_KEY
         }
         res = requests.get(url, params=params, timeout=6)
         if res.status_code == 200:
             jobs = res.json().get("jobs_results", [])
             for item in jobs:
-                company = item.get("company_name", "مؤسسة ألمانية")
+                company = item.get("company_name", "مؤسسة صحية/ألمانية")
                 title = item.get("title", job)
-                desc = item.get("description", "")
-                emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', desc)
-                email = emails[0] if emails else "تواصل مع المؤسسة"
-                apply_links = item.get("apply_options", [])
-                link = apply_links[0].get("link") if apply_links else "https://www.ausbildung.de"
-                results.append((company, title, email, link, "Google Jobs (SerpApi)"))
+                desc = item.get("description", "") + " " + str(item.get("apply_options", ""))
+                emails = clean_and_extract_emails(desc)
+                for em in emails:
+                    results.append((company, title, em, "Google Jobs"))
     except Exception:
         pass
     return results
 
-def fetch_rapidapi(job, location):
+def fetch_rapidapi(job, location, page):
     results = []
     try:
         url = "https://jsearch.p.rapidapi.com/search-v2"
@@ -48,47 +60,46 @@ def fetch_rapidapi(job, location):
             "x-rapidapi-key": RAPIDAPI_KEY
         }
         params = {
-            "query": f"Ausbildung {job} in {location} Germany",
+            "query": f"Ausbildung {job} in {location} Germany email",
             "num_pages": "1",
+            "page": str(page),
             "country": "de"
         }
         res = requests.get(url, headers=headers, params=params, timeout=6)
         if res.status_code == 200:
             data = res.json().get("data", [])
             for item in data:
-                company = item.get("employer_name", "شركة ألمانية")
+                company = item.get("employer_name", "مؤسسة تدريب")
                 title = item.get("job_title", job)
                 desc = item.get("job_description", "")
-                emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', desc)
-                email = emails[0] if emails else "تواصل عبر الرابط"
-                link = item.get("job_apply_link") or "https://www.google.com"
-                results.append((company, title, email, link, "JSearch (RapidAPI)"))
+                emails = clean_and_extract_emails(desc)
+                for em in emails:
+                    results.append((company, title, em, "JSearch API"))
     except Exception:
         pass
     return results
 
-def fetch_adzuna(job, location):
+def fetch_adzuna(job, location, page):
     results = []
     try:
-        url = f"https://api.adzuna.com/v1/api/jobs/de/search/1"
+        url = f"https://api.adzuna.com/v1/api/jobs/de/search/{page}"
         params = {
             "app_id": ADZUNA_APP_ID,
             "app_key": ADZUNA_APP_KEY,
             "what": f"Ausbildung {job}",
             "where": location,
-            "results_per_page": 10
+            "results_per_page": 20
         }
         res = requests.get(url, params=params, timeout=6)
         if res.status_code == 200:
             jobs = res.json().get("results", [])
             for item in jobs:
-                company = item.get("company", {}).get("display_name", "مؤسسة ألمانية")
+                company = item.get("company", {}).get("display_name", "دار عجزة / مستشفى")
                 title = item.get("title", job)
                 desc = item.get("description", "")
-                emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', desc)
-                email = emails[0] if emails else "تقديم مباشر"
-                link = item.get("redirect_url", "https://www.adzuna.de")
-                results.append((company, title, email, link, "Adzuna Germany"))
+                emails = clean_and_extract_emails(desc)
+                for em in emails:
+                    results.append((company, title, em, "Adzuna API"))
     except Exception:
         pass
     return results
@@ -102,31 +113,30 @@ def index():
         job = request.form.get('job', '').strip()
         location = request.form.get('location', '').strip()
         start_year = request.form.get('start_year', '2027').strip()
+        page = request.form.get('page', '1').strip()
         
         found_set = set()
         
-        # تشغيل المحركات بالتوازي لتفادي الـ Timeout على Vercel
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            f1 = executor.submit(fetch_serpapi, job, location)
-            f2 = executor.submit(fetch_rapidapi, job, location)
-            f3 = executor.submit(fetch_adzuna, job, location)
+            f1 = executor.submit(fetch_serpapi, job, location, page)
+            f2 = executor.submit(fetch_rapidapi, job, location, page)
+            f3 = executor.submit(fetch_adzuna, job, location, page)
             
             for f in concurrent.futures.as_completed([f1, f2, f3]):
                 for item in f.result():
                     found_set.add(item)
 
-        for comp, tit, em, ln, src in found_set:
+        for comp, tit, em, src in found_set:
             all_results.append({
                 "company": comp,
                 "title": tit,
                 "email": em,
-                "link": ln,
                 "source": src,
                 "year": start_year
             })
 
         if not all_results:
-            message = "⚠️ لم يتم العثور على نتائج كافية. جرب تغيير المدينة أو اسم التكوين (مثال: Pflegefachmann / Stuttgart)."
+            message = "⚠️ لم يتم العثور على إيميلات مباشرة في هذه الصفحة. جرب الانتقال لصفحة أخرى أو توسيع اسم المهنة (مثال: Pflegefachmann)."
 
     html_template = '''
     <!doctype html>
@@ -134,59 +144,69 @@ def index():
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>المحرك الشامل للأوسبيلدونغ</title>
+        <title>منصة جلب إيميلات الأوسبيلدونغ HR</title>
         <style>
             body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; margin: 0; padding: 20px; color: #0f172a; }
             .card { max-width: 850px; margin: auto; background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); }
             h2 { text-align: center; color: #1e3a8a; margin-bottom: 25px; }
-            label { display: block; margin-top: 15px; font-weight: 600; font-size: 14px; color: #334155; }
-            input { width: 100%; padding: 12px; margin-top: 6px; border: 1px solid #cbd5e1; border-radius: 8px; box-sizing: border-box; font-size: 15px; }
-            button { background: #2563eb; color: white; border: none; padding: 14px; width: 100%; margin-top: 25px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.2s; }
-            button:hover { background: #1d4ed8; }
+            .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+            .full-width { grid-column: span 2; }
+            label { display: block; margin-top: 10px; font-weight: 600; font-size: 14px; color: #334155; }
+            input { width: 100%; padding: 12px; margin-top: 5px; border: 1px solid #cbd5e1; border-radius: 8px; box-sizing: border-box; font-size: 15px; }
+            button { background: #059669; color: white; border: none; padding: 14px; width: 100%; margin-top: 20px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.2s; }
+            button:hover { background: #047857; }
             .alert { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px; border-radius: 8px; margin-top: 20px; text-align: center; }
             table { width: 100%; margin-top: 25px; border-collapse: collapse; font-size: 14px; }
             th, td { border: 1px solid #e2e8f0; padding: 12px; text-align: right; }
             th { background: #f1f5f9; color: #475569; }
-            .badge { background: #e0e7ff; color: #3730a3; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
-            a { color: #2563eb; text-decoration: none; font-weight: bold; }
+            .badge { background: #d1fae5; color: #065f46; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+            .email-box { background: #eff6ff; color: #1e40af; padding: 6px 10px; border-radius: 6px; font-family: monospace; font-weight: bold; display: inline-block; }
+            a { color: #2563eb; text-decoration: none; }
             a:hover { text-decoration: underline; }
         </style>
     </head>
     <body>
         <div class="card">
-            <h2>🇩🇪 محرك الأوسبيلدونغ الشامل (Multi-API Engine)</h2>
+            <h2>📧 محرك إيميلات الموارد البشرية للأوسبيلدونغ (HR Direct)</h2>
             <form method="POST">
-                <label>نوع التكوين المهني (Ausbildung):</label>
-                <input type="text" name="job" placeholder="مثال: Pflegefachmann" value="{{ request.form.get('job', 'Pflegefachmann') }}" required>
-
-                <label>المدينة أو الولاية بألمانيا:</label>
-                <input type="text" name="location" placeholder="مثال: Stuttgart" value="{{ request.form.get('location', 'Stuttgart') }}" required>
-
-                <label>سنة البدء المطلوبة:</label>
-                <input type="text" name="start_year" value="{{ request.form.get('start_year', '2027') }}" required>
-
-                <button type="submit">بحث شامل في جميع المصادر 🚀</button>
+                <div class="form-grid">
+                    <div>
+                        <label>التكوين (مثل: Pflegefachmann أو Althein):</label>
+                        <input type="text" name="job" value="{{ request.form.get('job', 'Pflegefachmann') }}" required>
+                    </div>
+                    <div>
+                        <label>المدينة بألمانيا (مثل: Stuttgart):</label>
+                        <input type="text" name="location" value="{{ request.form.get('location', 'Stuttgart') }}" required>
+                    </div>
+                    <div>
+                        <label>سنة البدء:</label>
+                        <input type="text" name="start_year" value="{{ request.form.get('start_year', '2027') }}" required>
+                    </div>
+                    <div>
+                        <label>رقم الصفحة (لتغيير النتائج):</label>
+                        <input type="number" name="page" min="1" max="10" value="{{ request.form.get('page', '1') }}" required>
+                    </div>
+                </div>
+                <button type="submit" class="full-width">استخراج الإيميلات المباشرة فقط 🎯</button>
             </form>
 
             {% if message %}<div class="alert">{{ message }}</div>{% endif %}
 
             {% if all_results %}
-                <h3 style="margin-top: 30px;">النتائج المجمعة من كافة المصادر ({{ all_results|length }} فرصة):</h3>
+                <h3 style="margin-top: 30px;">الإيميلات المستخرجة ({{ all_results|length }} إيميل في هذه الصفحة):</h3>
                 <table>
                     <tr>
-                        <th>المؤسسة / التخصص</th>
-                        <th>البريد أو رابط التقديم</th>
+                        <th>المؤسسة / المستشفى / دار العجزة</th>
+                        <th>البريد الإلكتروني المباشر (HR)</th>
                         <th>المصدر</th>
                     </tr>
                     {% for item in all_results %}
                     <tr>
                         <td><b>{{ item.company }}</b><br><small style="color: #64748b;">{{ item.title }} (سنة {{ item.year }})</small></td>
                         <td>
-                            {% if '@' in item.email %}
+                            <div class="email-box">
                                 <a href="mailto:{{ item.email }}">{{ item.email }}</a>
-                            {% else %}
-                                <a href="{{ item.link }}" target="_blank">رابط التقديم المباشر 🔗</a>
-                            {% endif %}
+                            </div>
                         </td>
                         <td><span class="badge">{{ item.source }}</span></td>
                     </tr>
@@ -201,4 +221,3 @@ def index():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
