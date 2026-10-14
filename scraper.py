@@ -1,27 +1,26 @@
 import os
 import re
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, render_template_string, request
 
 app = Flask(__name__)
 
-# قائمة شاملة لجميع المواقع والمنصات الألمانية المعتمدة للأوسبيلدونغ وتشمل Google Maps والمواقع المحلية الكبرى
-GERMAN_AUSBILDUNG_SITES = [
-    "https://www.ausbildung.de/suche/?search={job}&location={location}",
-    "https://www.azubiyo.de/ausbildung/{location}/{job}/",
-    "https://www.arbeitsagentur.de/jobsuche/suche?geometrie={location}&was={job}",
-    "https://www.stepstone.de/s1/ausbildung-{job}-{location}",
-    "https://www.praktikum.de/stellenangebote?q={job}&l={location}",
-    "https://www.jobware.de/arbeit/ausbildung-{job}-{location}",
-    "https://www.kimeta.de/ausbildung-{job}-in-{location}",
-    "https://www.aubi-plus.de/ausbildung/{job}/{location}/",
-    "https://www.ausbildung.net/suche/{job}/{location}",
-    "https://www.meinestadt.de/{location}/تكوين/suche?q={job}",
-    "https://www.stellenanzeigen.de/suche/?q={job}&l={location}",
-    "https://www.monster.de/jobs/suche/?q={job}&where={location}",
-    "https://de.indeed.com/jobs?q={job}&l={location}",
-    "https://www.glassdoor.de/Job/jobs.htm?sc.keyword={job}&locT=C&locId={location}"
-]
+# دالة سريعة لفحص رابط واحد واستخراج الإيميلات
+def fetch_emails_from_url(url, headers):
+    emails_found = set()
+    try:
+        res = requests.get(url, headers=headers, timeout=3)
+        if res.status_code == 200:
+            raw_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', res.text)
+            for email in raw_emails:
+                clean = email.lower().strip()
+                invalid = ['.png', '.jpg', '.svg', '.webp', '.js', '.css', 'example', 'sentry', 'optimizely', 'github', 'w3.org', 'google', 'domain']
+                if not any(inv in clean for inv in invalid) and (clean.endswith('.de') or clean.endswith('.com')):
+                    emails_found.add((clean, url))
+    except Exception:
+        pass
+    return emails_found
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -34,67 +33,58 @@ def index():
         location = request.form.get('location', '').strip().lower()
         start_year = request.form.get('start_year', '2027').strip()
         
-        found_emails = set()
-        
-        # استعلامات بحث ضخمة تشمل جوجل ماب (Google Maps) والمؤسسات المحلية والمنصات الرسمية
-        search_queries = [
-            f"site:google.com/maps {job} ausbildung {location}",
-            f"site:ausbildung.de {job} {location}",
-            f"site:azubiyo.de {job} {location}",
-            f"site:meinestadt.de {job} {location} bewerbung",
-            f"{job} ausbildung {location} bewerbung email de",
-            f"klinik krankenhaus pflege heim ausbildung {location} kontakt email",
-            f"karriere {job} ausbildung {location} 2027 impressum kontakt"
-        ]
-        
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "de-DE,de;q=0.9,en;q=0.8"
         }
-
-        all_links = set()
         
-        # جمع الروابط من المواقع والمنصات المذكورة ومن ضمنها نتائج البحث المحلي الخرائطية
-        for query in search_queries:
-            search_url = f"https://html.duckduckgo.com/html/?q={requests.utils.quote(query)}"
+        loc_query = location if location else "deutschland"
+        
+        # استعلامات بحث فائقة السرعة والتركيز
+        queries = [
+            f"{job} ausbildung {loc_query} bewerbung email",
+            f"site:ausbildung.de {job} {loc_query}",
+            f"site:azubiyo.de {job} {loc_query}",
+            f"site:stepstone.de ausbildung {job} {loc_query}",
+            f"pflegeheim krankenhaus ausbildung {job} {loc_query} kontakt" if 'pflege' in job else f"{job} karriere {loc_query} kontakt email"
+        ]
+
+        target_links = set()
+        
+        # جلب الروابط بسرعة
+        for q in queries:
             try:
-                response = requests.post(search_url, headers=headers, timeout=10)
-                if response.status_code == 200:
-                    links = re.findall(r'href="([^"]+)"', response.text)
-                    for link in links:
-                        if "uddg=" in link:
-                            actual_url = link.split("uddg=")[1].split("&")[0]
-                            actual_url = requests.utils.unquote(actual_url)
-                            all_links.add(actual_url)
+                search_url = f"https://html.duckduckgo.com/html/?q={requests.utils.quote(q)}"
+                resp = requests.post(search_url, headers=headers, timeout=3)
+                if resp.status_code == 200:
+                    links = re.findall(r'href="([^"]+)"', resp.text)
+                    for l in links:
+                        if "uddg=" in l:
+                            url_clean = requests.utils.unquote(l.split("uddg=")[1].split("&")[0])
+                            target_links.add(url_clean)
             except Exception:
                 continue
 
-        # فحص مكثف وشامل لأكبر عدد ممكن من الروابط والمواقع لجلب مئات الإيميلات الحقيقية
-        for url in list(all_links)[:50]:
-            try:
-                page_res = requests.get(url, headers=headers, timeout=5)
-                if page_res.status_code == 200:
-                    emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', page_res.text)
-                    for email in emails:
-                        email_clean = email.lower().strip()
-                        invalid = ['.png', '.jpg', '.svg', '.webp', '.js', '.css', 'example', 'sentry', 'optimizely', 'github', 'w3.org', 'domain', 'email', 'google']
-                        if not any(inv in email_clean for inv in invalid) and (email_clean.endswith('.de') or email_clean.endswith('.com')):
-                            found_emails.add((email_clean, url))
-            except Exception:
-                continue
+        # فحص جميع الروابط بالتوازي (Parallel) لإنهاء العملية في ثوانٍ معدودة
+        found_emails = set()
+        urls_to_check = list(target_links)[:20]
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            results = executor.map(lambda u: fetch_emails_from_url(u, headers), urls_to_check)
+            for res in results:
+                found_emails.update(res)
 
         if found_emails:
             for email, source in found_emails:
                 emails_data.append({
                     "email": email,
                     "job": job,
-                    "location": location if location else "ألمانيا",
+                    "location": loc_query,
                     "year": start_year,
                     "source": source
                 })
         else:
-            message = f"⚠️ يرجى توسيع نطاق البحث باختيار (ولاية كاملة) أو (ألمانيا كاملة) لضمان جلب أكبر عدد ممكن من المؤسسات والشركات."
+            message = f"⚠️ لم يتم العثور على إيميلات في ({loc_query}). جرب البحث عن مهنة أخرى أو كتابة الاسم بالألمانية (مثال: Berlin أو Bayern)."
 
     html_template = '''
     <!doctype html>
@@ -102,16 +92,16 @@ def index():
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>محرك شامل لإيميلات الأوسبيلدونغ - ألمانيا</title>
+        <title>محرك إيميلات الأوسبيلدونغ السريع</title>
         <style>
             body { font-family: Tahoma, sans-serif; background: #eef2f5; margin: 0; padding: 15px; color: #2c3e50; }
-            .card { max-width: 750px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+            .card { max-width: 700px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
             h2 { text-align: center; color: #1a365d; }
             label { display: block; margin-top: 12px; font-weight: bold; }
             input, select { width: 100%; padding: 11px; margin-top: 5px; border: 1px solid #cbd5e1; border-radius: 8px; box-sizing: border-box; }
             button { background: #2563eb; color: white; border: none; padding: 13px; width: 100%; margin-top: 20px; border-radius: 8px; font-weight: bold; cursor: pointer; }
             button:hover { background: #1d4ed8; }
-            .alert { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 12px; border-radius: 8px; margin-top: 20px; text-align: center; font-size: 13px; }
+            .alert { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px; border-radius: 8px; margin-top: 20px; text-align: center; font-size: 13px; }
             table { width: 100%; margin-top: 20px; border-collapse: collapse; font-size: 13px; }
             th, td { border: 1px solid #e2e8f0; padding: 10px; text-align: right; }
             th { background: #f8fafc; }
@@ -120,25 +110,25 @@ def index():
     </head>
     <body>
         <div class="card">
-            <h2>🇩🇪 الشامل الذكي لإيميلات الأوسبيلدونغ</h2>
+            <h2>🇩🇪 محرك إيميلات الأوسبيلدونغ (الفحص السريع)</h2>
             <form method="POST">
                 <label>نوع التكوين المهني (Ausbildung):</label>
                 <input type="text" name="job" placeholder="مثال: pflegefachmann" value="{{ request.form.get('job', 'pflegefachmann') }}" required>
 
-                <label>نطاق البحث الجغرافي (شامل المواقع والخرائط):</label>
+                <label>نطاق البحث الجغرافي:</label>
                 <select name="search_type">
-                    <option value="city">مدينة محددة والمحيط</option>
-                    <option value="state">ولاية كاملة (موصى بها لقائمة ضخمة)</option>
+                    <option value="city">مدينة محددة</option>
+                    <option value="state">ولاية كاملة</option>
                     <option value="all">ألمانيا كاملة</option>
                 </select>
 
                 <label>اسم المدينة أو الولاية (بالألمانية):</label>
-                <input type="text" name="location" placeholder="مثال: stuttgart أو bayern" value="{{ request.form.get('location', 'stuttgart') }}">
+                <input type="text" name="location" placeholder="مثال: berlin أو bayern" value="{{ request.form.get('location', 'berlin') }}">
 
                 <label>سنة البدء المطلوبة:</label>
                 <input type="text" name="start_year" value="{{ request.form.get('start_year', '2027') }}" required>
 
-                <button type="submit">بدء الفحص الشامل لجميع المنصات والخرائط 🔍</button>
+                <button type="submit">بدء الفحص السريع 🚀</button>
             </form>
 
             {% if message %}<div class="alert">{{ message }}</div>{% endif %}
@@ -146,11 +136,11 @@ def index():
             {% if emails_data %}
                 <h3 style="margin-top: 25px;">النتائج المستخرجة ({{ emails_data|length }} إيميل):</h3>
                 <table>
-                    <tr><th>البريد الإلكتروني</th><th>مصدر الرابط</th></tr>
+                    <tr><th>البريد الإلكتروني</th><th>التفاصيل والمصدر</th></tr>
                     {% for item in emails_data %}
                     <tr>
                         <td><a href="mailto:{{ item.email }}">{{ item.email }}</a></td>
-                        <td><span class="badge">{{ item.job }} ({{ item.year }})</span><br><small><a href="{{ item.source }}" target="_blank">رابط المصدر</a></small></td>
+                        <td><span class="badge">{{ item.job }} - {{ item.location }} ({{ item.year }})</span><br><small><a href="{{ item.source }}" target="_blank">زيارة المصدر</a></small></td>
                     </tr>
                     {% endfor %}
                 </table>
@@ -163,4 +153,3 @@ def index():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
